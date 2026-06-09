@@ -91,6 +91,7 @@ export default function App() {
   const abortMap        = useRef<Map<string, AbortController>>(new Map())
   const stepsRef        = useRef<string[]>([])
   const dataBootedRef   = useRef(false)
+  const slotRef         = useRef<Record<string, 'a' | 'b'>>({})  // active slot per layer
 
   const playTimer       = useRef<ReturnType<typeof setInterval> | null>(null)
   const insertBeforeRef = useRef<string | null>(null)
@@ -123,10 +124,11 @@ export default function App() {
   useEffect(() => {
     if (!containerRef.current) return
     const map = new maplibregl.Map({
-      container: containerRef.current,
-      style:     'https://tiles.openfreemap.org/styles/positron',
-      center:    [67.5, 33.0],
-      zoom:      5,
+      container:        containerRef.current,
+      style:            'https://tiles.openfreemap.org/styles/positron',
+      center:           [67.5, 33.0],
+      zoom:             5,
+      attributionControl: false,
     })
     map.addControl(new maplibregl.NavigationControl(), 'top-right')
 
@@ -147,13 +149,13 @@ export default function App() {
           id: 'cdf-admin1', type: 'line',
           source: bl.source, 'source-layer': 'boundary',
           filter: ['==', ['get', 'admin_level'], 4],
-          paint: { 'line-color': '#444', 'line-width': 1.0, 'line-opacity': 0.55 },
+          paint: { 'line-color': '#555', 'line-width': 0.7, 'line-opacity': 0.4 },
         }, firstSymId)
         map.addLayer({
           id: 'cdf-admin0', type: 'line',
           source: bl.source, 'source-layer': 'boundary',
           filter: ['==', ['get', 'admin_level'], 2],
-          paint: { 'line-color': '#111', 'line-width': 2.8, 'line-opacity': 0.9 },
+          paint: { 'line-color': '#333', 'line-width': 1.8, 'line-opacity': 0.65 },
         }, firstSymId)
         insertBeforeRef.current = 'cdf-admin1'
       } else {
@@ -210,37 +212,14 @@ export default function App() {
       setDataEnd(geojson.meta.data_end)
     }
 
-    const srcId  = `src-${id}`
-    const fillId = `fill-${id}`
-    const lineId = `line-${id}`
+    const EMPTY_FC = { type: 'FeatureCollection' as const, features: [] }
+    const fillPaint = (opacity: number) => ({
+      'fill-color':   RISK_COLOR as any,
+      'fill-opacity': opacity,
+      'fill-opacity-transition': { duration: FADE_MS, delay: 0 },
+    } as any)
 
-    if (map.getSource(srcId)) {
-      // Crossfade: fade out → swap data → fade back in
-      if (map.getLayer(fillId)) map.setPaintProperty(fillId, 'fill-opacity', 0)
-      const capturedGeojson = geojson
-      setTimeout(() => {
-        if (!map.getSource(srcId)) return
-        ;(map.getSource(srcId) as GeoJSONSource).setData(capturedGeojson)
-        setTimeout(() => {
-          if (map.getLayer(fillId)) map.setPaintProperty(fillId, 'fill-opacity', 0.72)
-        }, 30)
-      }, FADE_MS / 2)
-    } else {
-      const before = insertBeforeRef.current ?? undefined
-      map.addSource(srcId, { type: 'geojson', data: geojson })
-      map.addLayer({
-        id: fillId, type: 'fill', source: srcId,
-        paint: {
-          'fill-color':   RISK_COLOR as any,
-          'fill-opacity': 0.72,
-          'fill-opacity-transition': { duration: FADE_MS, delay: 0 },
-        } as any,
-      }, before)
-      map.addLayer({
-        id: lineId, type: 'line', source: srcId,
-        paint: { 'line-color': '#666', 'line-width': 0.5 },
-      }, before)
-
+    const attachPopup = (fillId: string) => {
       map.on('mouseenter', fillId, (e) => {
         if (!e.features?.length) return
         map.getCanvas().style.cursor = 'pointer'
@@ -264,6 +243,31 @@ export default function App() {
         map.getCanvas().style.cursor = ''
         popupRef.current?.remove()
       })
+    }
+
+    if (!map.getSource(`src-${id}-a`)) {
+      // First load: create dual-source, dual-fill setup
+      const before = insertBeforeRef.current ?? undefined
+      map.addSource(`src-${id}-a`, { type: 'geojson', data: geojson })
+      map.addSource(`src-${id}-b`, { type: 'geojson', data: EMPTY_FC })
+      // Add b first so a renders on top (last added = top of stack within same before anchor)
+      map.addLayer({ id: `fill-${id}-b`, type: 'fill', source: `src-${id}-b`, paint: fillPaint(0) }, before)
+      map.addLayer({ id: `fill-${id}-a`, type: 'fill', source: `src-${id}-a`, paint: fillPaint(0.72) }, before)
+      attachPopup(`fill-${id}-a`)
+      attachPopup(`fill-${id}-b`)
+      slotRef.current[id] = 'a'
+    } else {
+      // Update: load new data into the inactive slot and crossfade
+      const cur  = slotRef.current[id] ?? 'a'
+      const next = cur === 'a' ? 'b' : 'a'
+      ;(map.getSource(`src-${id}-${next}`) as GeoJSONSource).setData(geojson)
+      // Give MapLibre one frame to process setData before starting the transition
+      setTimeout(() => {
+        if (!map.getLayer(`fill-${id}-${next}`)) return
+        map.setPaintProperty(`fill-${id}-${next}`, 'fill-opacity', 0.72)
+        map.setPaintProperty(`fill-${id}-${cur}`,  'fill-opacity', 0)
+        slotRef.current[id] = next
+      }, 30)
     }
 
     // Prefetch next 2 frames (sequential fire-and-forget, respects pending set)
@@ -292,10 +296,12 @@ export default function App() {
 
     // Remove layers that were deactivated
     layerIds.forEach(id => {
-      if (!active.has(id) && map.getSource(`src-${id}`)) {
-        if (map.getLayer(`line-${id}`)) map.removeLayer(`line-${id}`)
-        if (map.getLayer(`fill-${id}`)) map.removeLayer(`fill-${id}`)
-        map.removeSource(`src-${id}`)
+      if (!active.has(id) && map.getSource(`src-${id}-a`)) {
+        for (const slot of ['a', 'b']) {
+          if (map.getLayer(`fill-${id}-${slot}`)) map.removeLayer(`fill-${id}-${slot}`)
+          if (map.getSource(`src-${id}-${slot}`)) map.removeSource(`src-${id}-${slot}`)
+        }
+        delete slotRef.current[id]
       }
     })
 
