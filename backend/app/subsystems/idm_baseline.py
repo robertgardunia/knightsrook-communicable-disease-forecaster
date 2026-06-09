@@ -3,6 +3,7 @@
 # normalized 0–1 across all districts. Half-life: 6 months.
 # Upgrade path: replace with full INLA Poisson hurdle model (Mercer et al. 2017).
 
+import json
 from app.db import get_pool
 
 
@@ -64,7 +65,7 @@ async def get_layer_data() -> dict:
     features = [
         {
             "type": "Feature",
-            "geometry": row["geometry"],
+            "geometry": json.loads(row["geometry"]) if isinstance(row["geometry"], str) else row["geometry"],
             "properties": {
                 "district": row["adm2_name"],
                 "province": row["adm1_name"],
