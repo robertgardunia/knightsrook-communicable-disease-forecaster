@@ -14,7 +14,7 @@ async def get_layer_data() -> dict:
             return {
                 "type": "FeatureCollection",
                 "features": [],
-                "meta": {"status": "no_data", "hint": "POST /api/ingest/gpei to load case data"},
+                "meta": {"status": "no_data", "hint": "POST /ingest/gpei to load case data"},
             }
 
         rows = await conn.fetch(
@@ -22,7 +22,6 @@ async def get_layer_data() -> dict:
             WITH case_scores AS (
                 SELECT
                     adm2_name,
-                    adm1_name,
                     iso2,
                     SUM(
                         EXP(-0.693147 * GREATEST(0, (CURRENT_DATE - onset_date)::float / 180.0))
@@ -32,14 +31,21 @@ async def get_layer_data() -> dict:
                 FROM substrate.wpv_cases
                 WHERE wild1 = 1
                   AND onset_date IS NOT NULL
-                GROUP BY adm2_name, adm1_name, iso2
+                GROUP BY adm2_name, iso2
             ),
             normalizer AS (
                 SELECT GREATEST(MAX(risk_score), 1e-10) AS mx FROM case_scores
+            ),
+            district_geoms AS (
+                SELECT iso2, adm2_name,
+                       MIN(adm1_name)     AS adm1_name,
+                       ST_Union(geom)     AS geom
+                FROM substrate.gpei_districts
+                GROUP BY iso2, adm2_name
             )
             SELECT
                 cs.adm2_name,
-                cs.adm1_name,
+                d.adm1_name,
                 cs.iso2,
                 cs.total_cases,
                 cs.last_case_date,
@@ -47,7 +53,7 @@ async def get_layer_data() -> dict:
                 ST_AsGeoJSON(d.geom)::json                AS geometry
             FROM case_scores cs
             CROSS JOIN normalizer n
-            LEFT JOIN substrate.gpei_districts d
+            LEFT JOIN district_geoms d
                    ON d.iso2 = cs.iso2
                   AND LOWER(d.adm2_name) = LOWER(cs.adm2_name)
             WHERE d.geom IS NOT NULL

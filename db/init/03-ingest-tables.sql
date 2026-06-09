@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS substrate.gpei_districts (
     adm1_viz_name  TEXT,
     adm0_viz_name  TEXT,
     ingested_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    geom           GEOMETRY(4326)
+    geom           GEOMETRY(Geometry, 4326)
 );
 CREATE INDEX IF NOT EXISTS idx_gpei_districts_geom    ON substrate.gpei_districts USING GIST(geom);
 CREATE INDEX IF NOT EXISTS idx_gpei_districts_iso2    ON substrate.gpei_districts(iso2);

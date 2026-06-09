@@ -119,16 +119,13 @@ async def ingest_wpv_cases(pool: asyncpg.Pool) -> int:
                      adm0_guid, adm1_guid, adm2_guid, classification,
                      wild1, wild2, wild3, vdpv1, vdpv2, vdpv3,
                      onset_year, onset_month, onset_date,
-                     latitude, longitude, geom,
+                     latitude, longitude,
                      doses_opv_routine, doses_opv_sia, doses_total,
                      surveillance_type, virus_genotype, virus_cluster,
                      who_region, wild_polio_count, afp_case_count)
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,
                         $10,$11,$12,$13,$14,$15,
                         $16,$17,$18,$19,$20,
-                        CASE WHEN $19 IS NOT NULL AND $20 IS NOT NULL
-                             THEN ST_SetSRID(ST_MakePoint($20::float, $19::float), 4326)
-                             ELSE NULL END,
                         $21,$22,$23,$24,$25,$26,$27,$28,$29)
                 """,
                 p.get("EPID"), p.get("Admin0Iso2"),
@@ -145,6 +142,14 @@ async def ingest_wpv_cases(pool: asyncpg.Pool) -> int:
                 p.get("WhoRegion"),
                 int(p.get("WildPolioC") or 0), int(p.get("AFPCase_Co") or 0),
             )
+
+        await conn.execute(
+            """
+            UPDATE substrate.wpv_cases
+               SET geom = ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)
+             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+            """
+        )
 
     logger.info("gpei wpv_cases ingested count=%d", len(features))
     return len(features)

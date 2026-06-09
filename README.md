@@ -33,10 +33,10 @@ See [docs/architecture/overview.md](docs/architecture/overview.md)
 Seed the database after first boot:
 
 ```bash
-curl -X POST http://localhost:5100/api/ingest/gpei
+curl -X POST http://localhost:5100/ingest/gpei
 ```
 
-Check status: `GET /api/ingest/status`
+Check status: `GET /ingest/status`
 
 | Source | Table | Auth |
 |--------|-------|------|
