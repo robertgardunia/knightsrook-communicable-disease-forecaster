@@ -8,6 +8,7 @@ from app.logging import configure_logging
 from app.middleware.auth import api_key_middleware
 from app.dashboard_stream import dashboard_ws
 from app.api.health import router as health_router
+from app.api.ingest import router as ingest_router
 from app.api.layers import router as layers_router
 from app.api.predictions import router as predictions_router
 
@@ -26,6 +27,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 app.add_middleware(BaseHTTPMiddleware, dispatch=api_key_middleware)
 
 app.include_router(health_router)
+app.include_router(ingest_router)
 app.include_router(layers_router)
 app.include_router(predictions_router)
 app.add_websocket_route("/ws/events", dashboard_ws)

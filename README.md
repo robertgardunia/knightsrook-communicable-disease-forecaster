@@ -28,11 +28,27 @@ docker compose up --build
 
 See [docs/architecture/overview.md](docs/architecture/overview.md)
 
+## Data ingestion
+
+Seed the database after first boot:
+
+```bash
+curl -X POST http://localhost:5100/api/ingest/gpei
+```
+
+Check status: `GET /api/ingest/status`
+
+| Source | Table | Auth |
+|--------|-------|------|
+| GPEI ArcGIS FeatureServer (WPV cases + district polygons) | `substrate.wpv_cases`, `substrate.gpei_districts` | None — public |
+| NASA EARTHDATA GRACE MASCON | `substrate.grace_groundwater` | `EARTHDATA_TOKEN` |
+| IOM DTM via HDX | `substrate.displacement_data` | None — public |
+
 ## Layer status
 
 | Layer | Status |
 |-------|--------|
-| IDM baseline (Mercer et al. 2017 replication) | stub |
+| IDM baseline — recency-weighted WPV case density (exp decay, 6-month half-life) | **live** |
 | Hydrogeological vulnerability (HydroSHEDS + GRACE) | stub |
 | Transhumance displacement vectors (FAO + IOM DTM) | stub |
 | Fly-mediated exposure kernels (convolution) | stub |
