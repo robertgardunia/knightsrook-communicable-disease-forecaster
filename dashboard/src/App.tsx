@@ -91,7 +91,6 @@ export default function App() {
   const abortMap        = useRef<Map<string, AbortController>>(new Map())
   const stepsRef        = useRef<string[]>([])
   const dataBootedRef   = useRef(false)
-  const slotRef         = useRef<Record<string, 'a' | 'b'>>({})  // active slot per layer
 
   const playTimer       = useRef<ReturnType<typeof setInterval> | null>(null)
   const insertBeforeRef = useRef<string | null>(null)
@@ -124,11 +123,12 @@ export default function App() {
   useEffect(() => {
     if (!containerRef.current) return
     const map = new maplibregl.Map({
-      container:        containerRef.current,
-      style:            'https://tiles.openfreemap.org/styles/positron',
-      center:           [67.5, 33.0],
-      zoom:             5,
-      attributionControl: false,
+      container:           containerRef.current,
+      style:               'https://tiles.openfreemap.org/styles/positron',
+      center:              [67.5, 33.0],
+      zoom:                5,
+      attributionControl:  false,
+      preserveDrawingBuffer: true,  // needed so canvas.toDataURL() works for crossfade snapshots
     })
     map.addControl(new maplibregl.NavigationControl(), 'top-right')
 
@@ -212,14 +212,41 @@ export default function App() {
       setDataEnd(geojson.meta.data_end)
     }
 
-    const EMPTY_FC = { type: 'FeatureCollection' as const, features: [] }
-    const fillPaint = (opacity: number) => ({
-      'fill-color':   RISK_COLOR as any,
-      'fill-opacity': opacity,
-      'fill-opacity-transition': { duration: FADE_MS, delay: 0 },
-    } as any)
+    const srcId  = `src-${id}`
+    const fillId = `fill-${id}`
 
-    const attachPopup = (fillId: string) => {
+    if (map.getSource(srcId)) {
+      // Crossfade via canvas snapshot: freeze current frame as CSS overlay,
+      // swap data instantly underneath, then fade the frozen screenshot out.
+      // This avoids the "getting lighter" artifact from opacity-based blending.
+      const canvas  = map.getCanvas()
+      const dataUrl = canvas.toDataURL()
+      const container = containerRef.current
+
+      if (container && dataUrl.length > 200) {
+        const overlay = document.createElement('img')
+        overlay.src = dataUrl
+        overlay.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2;'
+        container.appendChild(overlay)
+        ;(map.getSource(srcId) as GeoJSONSource).setData(geojson)
+        // Start fade after one rAF so the new data has begun rendering
+        requestAnimationFrame(() => {
+          overlay.style.transition = `opacity ${FADE_MS}ms ease`
+          overlay.style.opacity = '0'
+          setTimeout(() => { if (overlay.parentElement) overlay.remove() }, FADE_MS + 100)
+        })
+      } else {
+        ;(map.getSource(srcId) as GeoJSONSource).setData(geojson)
+      }
+    } else {
+      // First load: create source and fill layer
+      const before = insertBeforeRef.current ?? undefined
+      map.addSource(srcId, { type: 'geojson', data: geojson })
+      map.addLayer({
+        id: fillId, type: 'fill', source: srcId,
+        paint: { 'fill-color': RISK_COLOR as any, 'fill-opacity': 0.72 },
+      }, before)
+
       map.on('mouseenter', fillId, (e) => {
         if (!e.features?.length) return
         map.getCanvas().style.cursor = 'pointer'
@@ -243,31 +270,6 @@ export default function App() {
         map.getCanvas().style.cursor = ''
         popupRef.current?.remove()
       })
-    }
-
-    if (!map.getSource(`src-${id}-a`)) {
-      // First load: create dual-source, dual-fill setup
-      const before = insertBeforeRef.current ?? undefined
-      map.addSource(`src-${id}-a`, { type: 'geojson', data: geojson })
-      map.addSource(`src-${id}-b`, { type: 'geojson', data: EMPTY_FC })
-      // Add b first so a renders on top (last added = top of stack within same before anchor)
-      map.addLayer({ id: `fill-${id}-b`, type: 'fill', source: `src-${id}-b`, paint: fillPaint(0) }, before)
-      map.addLayer({ id: `fill-${id}-a`, type: 'fill', source: `src-${id}-a`, paint: fillPaint(0.72) }, before)
-      attachPopup(`fill-${id}-a`)
-      attachPopup(`fill-${id}-b`)
-      slotRef.current[id] = 'a'
-    } else {
-      // Update: load new data into the inactive slot and crossfade
-      const cur  = slotRef.current[id] ?? 'a'
-      const next = cur === 'a' ? 'b' : 'a'
-      ;(map.getSource(`src-${id}-${next}`) as GeoJSONSource).setData(geojson)
-      // Give MapLibre one frame to process setData before starting the transition
-      setTimeout(() => {
-        if (!map.getLayer(`fill-${id}-${next}`)) return
-        map.setPaintProperty(`fill-${id}-${next}`, 'fill-opacity', 0.72)
-        map.setPaintProperty(`fill-${id}-${cur}`,  'fill-opacity', 0)
-        slotRef.current[id] = next
-      }, 30)
     }
 
     // Prefetch next 2 frames (sequential fire-and-forget, respects pending set)
@@ -296,12 +298,9 @@ export default function App() {
 
     // Remove layers that were deactivated
     layerIds.forEach(id => {
-      if (!active.has(id) && map.getSource(`src-${id}-a`)) {
-        for (const slot of ['a', 'b']) {
-          if (map.getLayer(`fill-${id}-${slot}`)) map.removeLayer(`fill-${id}-${slot}`)
-          if (map.getSource(`src-${id}-${slot}`)) map.removeSource(`src-${id}-${slot}`)
-        }
-        delete slotRef.current[id]
+      if (!active.has(id) && map.getSource(`src-${id}`)) {
+        if (map.getLayer(`fill-${id}`)) map.removeLayer(`fill-${id}`)
+        map.removeSource(`src-${id}`)
       }
     })
 
