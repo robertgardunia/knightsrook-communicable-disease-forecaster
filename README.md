@@ -38,6 +38,10 @@ curl -X POST http://localhost:5100/ingest/gpei
 
 Check status: `GET /ingest/status`
 
+Layer endpoints accept an optional `?date=YYYY-MM-DD` query parameter. The IDM baseline
+returns the risk surface as of that date — scrub backward through history or forward into
+the decay forecast. Date range (`data_start`, `data_end`) is returned in the response `meta`.
+
 | Source | Table | Auth |
 |--------|-------|------|
 | GPEI ArcGIS FeatureServer (WPV cases + district polygons) | `substrate.wpv_cases`, `substrate.gpei_districts` | None — public |

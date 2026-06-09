@@ -4,5 +4,5 @@
 # Produces the detection-latency surface (separate from transmission risk surface).
 # TODO: ingest GPEI coverage data; compute detection latency per district
 
-async def get_layer_data() -> dict:
+async def get_layer_data(reference_date: str | None = None) -> dict:
     return {"type": "stub", "layer": "surveillance", "features": []}

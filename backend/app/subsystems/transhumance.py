@@ -4,5 +4,5 @@
 # Predicts where mobile populations will concentrate this season vs. historical baseline.
 # TODO: integrate Clay/Prithvi foundation model for encampment detection
 
-async def get_layer_data() -> dict:
+async def get_layer_data(reference_date: str | None = None) -> dict:
     return {"type": "stub", "layer": "transhumance", "features": []}

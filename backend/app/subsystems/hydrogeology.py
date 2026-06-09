@@ -4,5 +4,5 @@
 # Identifies zones where environmental contamination persists beyond recent shedding.
 # TODO: xarray pipeline for GRACE MASCON grids → groundwater anomaly time series
 
-async def get_layer_data() -> dict:
+async def get_layer_data(reference_date: str | None = None) -> dict:
     return {"type": "stub", "layer": "hydrogeology", "features": []}

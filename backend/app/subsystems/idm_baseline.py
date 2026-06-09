@@ -4,19 +4,33 @@
 # Upgrade path: replace with full INLA Poisson hurdle model (Mercer et al. 2017).
 
 import json
+from datetime import date as date_type, datetime
 from app.db import get_pool
 
 
-async def get_layer_data() -> dict:
+async def get_layer_data(reference_date: str | None = None) -> dict:
+    try:
+        ref_date = datetime.strptime(reference_date, '%Y-%m-%d').date() if reference_date else date_type.today()
+    except ValueError:
+        ref_date = date_type.today()
+
     pool = await get_pool()
     async with pool.acquire() as conn:
-        total = await conn.fetchval("SELECT COUNT(*) FROM substrate.wpv_cases")
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM substrate.wpv_cases WHERE wild1 = 1 AND onset_date IS NOT NULL"
+        )
         if not total:
             return {
                 "type": "FeatureCollection",
                 "features": [],
                 "meta": {"status": "no_data", "hint": "POST /ingest/gpei to load case data"},
             }
+
+        date_range = await conn.fetchrow("""
+            SELECT MIN(onset_date) AS min_date, MAX(onset_date) AS max_date
+            FROM substrate.wpv_cases
+            WHERE wild1 = 1 AND onset_date IS NOT NULL
+        """)
 
         rows = await conn.fetch(
             """
@@ -25,13 +39,14 @@ async def get_layer_data() -> dict:
                     adm2_name,
                     iso2,
                     SUM(
-                        EXP(-0.693147 * GREATEST(0, (CURRENT_DATE - onset_date)::float / 180.0))
-                    )                    AS risk_score,
-                    COUNT(*)             AS total_cases,
-                    MAX(onset_date)      AS last_case_date
+                        EXP(-0.693147 * GREATEST(0, ($1::date - onset_date)::float / 180.0))
+                    )               AS risk_score,
+                    COUNT(*)        AS total_cases,
+                    MAX(onset_date) AS last_case_date
                 FROM substrate.wpv_cases
                 WHERE wild1 = 1
                   AND onset_date IS NOT NULL
+                  AND onset_date <= $1::date
                 GROUP BY adm2_name, iso2
             ),
             normalizer AS (
@@ -39,8 +54,8 @@ async def get_layer_data() -> dict:
             ),
             district_geoms AS (
                 SELECT iso2, adm2_name,
-                       MIN(adm1_name)     AS adm1_name,
-                       ST_Union(geom)     AS geom
+                       MIN(adm1_name)  AS adm1_name,
+                       ST_Union(geom)  AS geom
                 FROM substrate.gpei_districts
                 GROUP BY iso2, adm2_name
             )
@@ -51,7 +66,7 @@ async def get_layer_data() -> dict:
                 cs.total_cases,
                 cs.last_case_date,
                 ROUND((cs.risk_score / n.mx)::numeric, 4) AS normalized_score,
-                ST_AsGeoJSON(d.geom)::json                AS geometry
+                ST_AsGeoJSON(d.geom)::json                 AS geometry
             FROM case_scores cs
             CROSS JOIN normalizer n
             LEFT JOIN district_geoms d
@@ -59,7 +74,8 @@ async def get_layer_data() -> dict:
                   AND LOWER(d.adm2_name) = LOWER(cs.adm2_name)
             WHERE d.geom IS NOT NULL
             ORDER BY normalized_score DESC
-            """
+            """,
+            ref_date,
         )
 
     features = [
@@ -67,13 +83,13 @@ async def get_layer_data() -> dict:
             "type": "Feature",
             "geometry": json.loads(row["geometry"]) if isinstance(row["geometry"], str) else row["geometry"],
             "properties": {
-                "district": row["adm2_name"],
-                "province": row["adm1_name"],
-                "country": row["iso2"],
-                "risk_score": float(row["normalized_score"]),
+                "district":    row["adm2_name"],
+                "province":    row["adm1_name"],
+                "country":     row["iso2"],
+                "risk_score":  float(row["normalized_score"]),
                 "total_cases": row["total_cases"],
-                "last_case": row["last_case_date"].isoformat() if row["last_case_date"] else None,
-                "layer": "idm_baseline",
+                "last_case":   row["last_case_date"].isoformat() if row["last_case_date"] else None,
+                "layer":       "idm_baseline",
             },
         }
         for row in rows
@@ -83,7 +99,10 @@ async def get_layer_data() -> dict:
         "type": "FeatureCollection",
         "features": features,
         "meta": {
+            "reference_date": ref_date.isoformat(),
+            "data_start":     date_range["min_date"].isoformat() if date_range["min_date"] else None,
+            "data_end":       date_range["max_date"].isoformat() if date_range["max_date"] else None,
             "total_districts": len(features),
-            "scoring": "exp_decay_180d_halflife",
+            "scoring":        "exp_decay_180d_halflife",
         },
     }

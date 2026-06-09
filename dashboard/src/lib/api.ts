@@ -6,8 +6,9 @@ export async function fetchLayers(): Promise<string[]> {
   return json.data ?? []
 }
 
-export async function fetchLayer(id: string): Promise<unknown> {
-  const res = await fetch(`${BASE}/layers/${id}`)
+export async function fetchLayer(id: string, date?: string): Promise<any> {
+  const url = date ? `${BASE}/layers/${id}?date=${date}` : `${BASE}/layers/${id}`
+  const res = await fetch(url)
   const json = await res.json()
   return json.data
 }

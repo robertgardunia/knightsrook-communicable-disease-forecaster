@@ -4,5 +4,5 @@
 # Identifies zones structurally missed by PTP vaccination strategy.
 # TODO: derive crossings from HydroSHEDS terrain + IOM DTM crossing records
 
-async def get_layer_data() -> dict:
+async def get_layer_data(reference_date: str | None = None) -> dict:
     return {"type": "stub", "layer": "cross_border", "features": []}

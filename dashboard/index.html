@@ -4,7 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Communicable Disease Forecaster</title>
-    <style>* { margin: 0; padding: 0; box-sizing: border-box; } body { background: #111; }</style>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { background: #111; }
+      .cdf-popup .maplibregl-popup-content {
+        background: rgba(12,12,20,0.92);
+        color: #ddd;
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 6px;
+        padding: 10px 12px;
+        backdrop-filter: blur(6px);
+      }
+      .cdf-popup .maplibregl-popup-tip { border-top-color: rgba(12,12,20,0.92); }
+      .cdf-popup hr { border-color: rgba(255,255,255,0.15); }
+    </style>
   </head>
   <body>
     <div id="root"></div>

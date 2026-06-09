@@ -5,5 +5,5 @@
 # Identifies settled villages within fly-transport range of contamination sources.
 # TODO: scipy.ndimage convolution over rasterized breeding-site density
 
-async def get_layer_data() -> dict:
+async def get_layer_data(reference_date: str | None = None) -> dict:
     return {"type": "stub", "layer": "fly_kernel", "features": []}
