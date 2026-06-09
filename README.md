@@ -42,6 +42,10 @@ Layer endpoints accept an optional `?date=YYYY-MM-DD` query parameter. The IDM b
 returns the risk surface as of that date — scrub backward through history or forward into
 the decay forecast. Date range (`data_start`, `data_end`) is returned in the response `meta`.
 
+The dashboard implements a Windy-style time scrubber with play/pause/loop, span selector (1M/3M/6M/1Y),
+crossfade transitions between time steps, and per-layer AbortController request cancellation to
+prevent backend flooding during rapid scrubs.
+
 | Source | Table | Auth |
 |--------|-------|------|
 | GPEI ArcGIS FeatureServer (WPV cases + district polygons) | `substrate.wpv_cases`, `substrate.gpei_districts` | None — public |

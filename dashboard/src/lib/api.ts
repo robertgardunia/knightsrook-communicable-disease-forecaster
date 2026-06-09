@@ -6,9 +6,10 @@ export async function fetchLayers(): Promise<string[]> {
   return json.data ?? []
 }
 
-export async function fetchLayer(id: string, date?: string): Promise<any> {
+export async function fetchLayer(id: string, date?: string, signal?: AbortSignal): Promise<any> {
   const url = date ? `${BASE}/layers/${id}?date=${date}` : `${BASE}/layers/${id}`
-  const res = await fetch(url)
+  const res = await fetch(url, signal ? { signal } : undefined)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const json = await res.json()
   return json.data
 }

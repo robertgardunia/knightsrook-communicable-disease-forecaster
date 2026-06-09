@@ -30,8 +30,9 @@ const SPAN_OPTIONS = [
   { label: '1Y',  months: 12 },
 ]
 
-const PROJECTION_MONTHS = 24   // months to project beyond last data point
-const PLAY_INTERVAL_MS  = 700  // ms per frame during auto-play
+const PROJECTION_MONTHS = 24
+const PLAY_INTERVAL_MS  = 700
+const FADE_MS           = 350
 
 // ── date helpers ─────────────────────────────────────────────────────────────
 
@@ -51,8 +52,8 @@ function parseYMD(s: string): Date {
 
 function fmtDisplay(ymd: string, dataEnd: string | null): string {
   const d = parseYMD(ymd)
-  const label = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' })
-  return dataEnd && ymd > dataEnd ? `${label} ›forecast` : label
+  return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' })
+    + (dataEnd && ymd > dataEnd ? ' ›' : '')
 }
 
 function generateSteps(startYMD: string, endYMD: string, projectionMonths: number, spanMonths: number): string[] {
@@ -83,25 +84,37 @@ export default function App() {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef       = useRef<maplibregl.Map | null>(null)
   const popupRef     = useRef<maplibregl.Popup | null>(null)
-  const frameCache   = useRef<Record<string, any>>({})
-  const playTimer    = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const [mapReady,       setMapReady]       = useState(false)
-  const [layerIds,       setLayerIds]       = useState<string[]>([])
-  const [active,         setActive]         = useState<Set<string>>(new Set(['idm_baseline']))
-  const [showLayers,     setShowLayers]     = useState(false)
-  const [dataStart,      setDataStart]      = useState<string | null>(null)
-  const [dataEnd,        setDataEnd]        = useState<string | null>(null)
-  const [spanMonths,     setSpanMonths]     = useState(1)
-  const [stepIdx,        setStepIdx]        = useState(0)
-  const [playing,        setPlaying]        = useState(false)
-  const [looping,        setLooping]        = useState(true)
+  // Stable refs used inside loadLayer to avoid re-creating the callback on every state change
+  const frameCache      = useRef<Record<string, any>>({})
+  const pendingSet      = useRef<Set<string>>(new Set())
+  const abortMap        = useRef<Map<string, AbortController>>(new Map())
+  const stepsRef        = useRef<string[]>([])
+  const dataBootedRef   = useRef(false)
+
+  const playTimer       = useRef<ReturnType<typeof setInterval> | null>(null)
+  const insertBeforeRef = useRef<string | null>(null)
+
+  const [mapReady,   setMapReady]   = useState(false)
+  const [layerIds,   setLayerIds]   = useState<string[]>([])
+  const [active,     setActive]     = useState<Set<string>>(new Set(['idm_baseline']))
+  const [showLayers, setShowLayers] = useState(false)
+  const [dataStart,  setDataStart]  = useState<string | null>(null)
+  const [dataEnd,    setDataEnd]    = useState<string | null>(null)
+  const [spanMonths, setSpanMonths] = useState(1)
+  const [stepIdx,    setStepIdx]    = useState(0)
+  const [playing,    setPlaying]    = useState(false)
+  const [looping,    setLooping]    = useState(true)
 
   // Derived
   const steps = useMemo(
     () => dataStart && dataEnd ? generateSteps(dataStart, dataEnd, PROJECTION_MONTHS, spanMonths) : [],
     [dataStart, dataEnd, spanMonths],
   )
+
+  // Keep stepsRef in sync so loadLayer (stable, [] deps) always sees latest steps
+  useEffect(() => { stepsRef.current = steps }, [steps])
+
   const currentDate  = steps[stepIdx] ?? null
   const isProjection = dataEnd && currentDate ? currentDate > dataEnd : false
 
@@ -125,6 +138,28 @@ export default function App() {
     popupRef.current = popup
 
     map.on('load', () => {
+      const styleLayers = map.getStyle().layers
+      const firstSymId = styleLayers.find(l => l.type === 'symbol')?.id ?? null
+      const bl = styleLayers.find(l => (l as any)['source-layer'] === 'boundary') as any
+
+      if (bl?.source && firstSymId) {
+        map.addLayer({
+          id: 'cdf-admin1', type: 'line',
+          source: bl.source, 'source-layer': 'boundary',
+          filter: ['==', ['get', 'admin_level'], 4],
+          paint: { 'line-color': '#444', 'line-width': 1.0, 'line-opacity': 0.55 },
+        }, firstSymId)
+        map.addLayer({
+          id: 'cdf-admin0', type: 'line',
+          source: bl.source, 'source-layer': 'boundary',
+          filter: ['==', ['get', 'admin_level'], 2],
+          paint: { 'line-color': '#111', 'line-width': 2.8, 'line-opacity': 0.9 },
+        }, firstSymId)
+        insertBeforeRef.current = 'cdf-admin1'
+      } else {
+        insertBeforeRef.current = firstSymId
+      }
+
       mapRef.current = map
       setMapReady(true)
     })
@@ -140,6 +175,7 @@ export default function App() {
 
   // ── load / update layer data ──────────────────────────────────────────────
 
+  // Stable callback — uses refs, never re-creates on state changes
   const loadLayer = useCallback(async (id: string, date: string | null) => {
     const map = mapRef.current
     if (!map) return
@@ -148,12 +184,28 @@ export default function App() {
     let geojson = frameCache.current[cacheKey]
 
     if (!geojson) {
-      geojson = await fetchLayer(id, date ?? undefined)
-      frameCache.current[cacheKey] = geojson
+      if (pendingSet.current.has(cacheKey)) return  // already in-flight
+
+      // Cancel previous pending request for this layer
+      abortMap.current.get(id)?.abort()
+      const controller = new AbortController()
+      abortMap.current.set(id, controller)
+
+      pendingSet.current.add(cacheKey)
+      try {
+        geojson = await fetchLayer(id, date ?? undefined, controller.signal)
+        if (!geojson) return
+        frameCache.current[cacheKey] = geojson
+      } catch {
+        return  // AbortError or network error — silently ignore
+      } finally {
+        pendingSet.current.delete(cacheKey)
+      }
     }
 
-    // Bootstrap date range from first response meta
-    if (id === 'idm_baseline' && geojson?.meta?.data_start && !dataStart) {
+    // Bootstrap date range from first IDM baseline response
+    if (id === 'idm_baseline' && geojson?.meta?.data_start && !dataBootedRef.current) {
+      dataBootedRef.current = true
       setDataStart(geojson.meta.data_start)
       setDataEnd(geojson.meta.data_end)
     }
@@ -163,22 +215,32 @@ export default function App() {
     const lineId = `line-${id}`
 
     if (map.getSource(srcId)) {
-      (map.getSource(srcId) as GeoJSONSource).setData(geojson)
+      // Crossfade: fade out → swap data → fade back in
+      if (map.getLayer(fillId)) map.setPaintProperty(fillId, 'fill-opacity', 0)
+      const capturedGeojson = geojson
+      setTimeout(() => {
+        if (!map.getSource(srcId)) return
+        ;(map.getSource(srcId) as GeoJSONSource).setData(capturedGeojson)
+        setTimeout(() => {
+          if (map.getLayer(fillId)) map.setPaintProperty(fillId, 'fill-opacity', 0.72)
+        }, 30)
+      }, FADE_MS / 2)
     } else {
+      const before = insertBeforeRef.current ?? undefined
       map.addSource(srcId, { type: 'geojson', data: geojson })
       map.addLayer({
         id: fillId, type: 'fill', source: srcId,
         paint: {
           'fill-color':   RISK_COLOR as any,
-          'fill-opacity': 0.75,
-        },
-      })
+          'fill-opacity': 0.72,
+          'fill-opacity-transition': { duration: FADE_MS, delay: 0 },
+        } as any,
+      }, before)
       map.addLayer({
         id: lineId, type: 'line', source: srcId,
-        paint: { 'line-color': '#555', 'line-width': 0.6 },
-      })
+        paint: { 'line-color': '#666', 'line-width': 0.5 },
+      }, before)
 
-      // Hover popup
       map.on('mouseenter', fillId, (e) => {
         if (!e.features?.length) return
         map.getCanvas().style.cursor = 'pointer'
@@ -204,21 +266,26 @@ export default function App() {
       })
     }
 
-    // Prefetch next 3 frames in play direction
-    if (date && steps.length) {
-      const idx = steps.indexOf(date)
-      for (let ahead = 1; ahead <= 3; ahead++) {
-        const nextDate = steps[idx + ahead]
+    // Prefetch next 2 frames (sequential fire-and-forget, respects pending set)
+    if (date) {
+      const stepsNow = stepsRef.current
+      const idx = stepsNow.indexOf(date)
+      for (let ahead = 1; ahead <= 2; ahead++) {
+        const nextDate = stepsNow[idx + ahead]
         if (!nextDate) break
         const nk = `${id}:${nextDate}`
-        if (!frameCache.current[nk]) {
-          fetchLayer(id, nextDate).then(d => { frameCache.current[nk] = d })
+        if (!frameCache.current[nk] && !pendingSet.current.has(nk)) {
+          pendingSet.current.add(nk)
+          fetchLayer(id, nextDate)
+            .then(d => { if (d) frameCache.current[nk] = d })
+            .catch(() => {})
+            .finally(() => pendingSet.current.delete(nk))
         }
       }
     }
-  }, [dataStart, steps])
+  }, [])  // Stable — reads only refs, no state deps
 
-  // When active layers, date, or map readiness change → refresh data
+  // Refresh map data when active layers, date, or readiness changes
   useEffect(() => {
     const map = mapRef.current
     if (!map || !mapReady) return
@@ -232,7 +299,7 @@ export default function App() {
       }
     })
 
-    // Load/update active layers
+    // Load / update active layers
     active.forEach(id => {
       if (layerIds.includes(id)) loadLayer(id, currentDate)
     })
@@ -248,11 +315,9 @@ export default function App() {
     } else if (steps.length && dataEnd) {
       setStepIdx(nearestStepIdx(steps, dataEnd))
     }
-  }, [steps])
+  }, [steps])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    prevStepRef.current = currentDate
-  })
+  useEffect(() => { prevStepRef.current = currentDate })
 
   // ── auto-play ─────────────────────────────────────────────────────────────
 
@@ -283,13 +348,15 @@ export default function App() {
     return endIdx / (steps.length - 1)
   }, [steps, dataEnd])
 
+  const progressPct = steps.length > 1 ? (stepIdx / (steps.length - 1)) * 100 : 0
+
   return (
     <div style={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden', background: '#1a1a2e' }}>
 
       {/* Map */}
       <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />
 
-      {/* Layer toggle button */}
+      {/* Layer toggle */}
       <button
         onClick={() => setShowLayers(v => !v)}
         style={{
@@ -348,23 +415,28 @@ export default function App() {
       {/* Time bar */}
       <div style={{
         position: 'absolute', bottom: 0, left: 0, right: 0, height: 72,
-        background: 'rgba(8,8,16,0.88)',
-        borderTop: '1px solid rgba(255,255,255,0.08)',
+        background: 'rgba(8,8,16,0.92)',
+        borderTop: '1px solid rgba(255,255,255,0.1)',
         display: 'flex', alignItems: 'center', gap: 12, padding: '0 16px',
         backdropFilter: 'blur(8px)',
       }}>
 
         {/* Playback controls */}
         <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-          <CtrlBtn onClick={() => setStepIdx(i => Math.max(0, i - 1))} title="Step back">◀</CtrlBtn>
+          {/* Step back — arrow with leading bar */}
+          <CtrlBtn onClick={() => { setPlaying(false); setStepIdx(i => Math.max(0, i - 1)) }} title="Step back">⏮</CtrlBtn>
+          {/* Play / Pause toggle */}
           <CtrlBtn
             onClick={() => setPlaying(v => !v)}
             title={playing ? 'Pause' : 'Play'}
             active={playing}
+            style={{ fontSize: 15 }}
           >
             {playing ? '⏸' : '▶'}
           </CtrlBtn>
-          <CtrlBtn onClick={() => setStepIdx(i => Math.min(steps.length - 1, i + 1))} title="Step forward">▶</CtrlBtn>
+          {/* Step forward — arrow with trailing bar */}
+          <CtrlBtn onClick={() => { setPlaying(false); setStepIdx(i => Math.min(steps.length - 1, i + 1)) }} title="Step forward">⏭</CtrlBtn>
+          {/* Loop toggle */}
           <CtrlBtn
             onClick={() => setLooping(v => !v)}
             title={looping ? 'Loop on' : 'Loop off'}
@@ -377,20 +449,42 @@ export default function App() {
         <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
           {/* Year labels */}
           <YearTicks steps={steps} projectionFrac={projectionFrac} />
-          {/* Track background with projection zone */}
-          <div style={{ position: 'relative', height: 4, borderRadius: 2, marginTop: 2 }}>
+
+          {/* Track + fill + scrubber dot */}
+          <div style={{ position: 'relative', height: 6, borderRadius: 3, marginTop: 2 }}>
+            {/* Track: dark gray base */}
             <div style={{
-              position: 'absolute', inset: 0, borderRadius: 2,
-              background: `linear-gradient(to right, #4a9eff ${(projectionFrac * 100).toFixed(1)}%, rgba(255,200,50,0.3) ${(projectionFrac * 100).toFixed(1)}%)`,
+              position: 'absolute', inset: 0, borderRadius: 3,
+              background: 'rgba(255,255,255,0.1)',
             }} />
-            {/* Progress fill */}
+            {/* Projection zone: amber tint on right portion */}
             <div style={{
-              position: 'absolute', left: 0, top: 0, bottom: 0, borderRadius: 2,
-              width: `${steps.length > 1 ? (stepIdx / (steps.length - 1)) * 100 : 0}%`,
+              position: 'absolute', top: 0, bottom: 0, borderRadius: '0 3px 3px 0',
+              left: `${(projectionFrac * 100).toFixed(1)}%`,
+              background: 'rgba(245,166,35,0.18)',
+            }} />
+            {/* Fill: bright blue or amber showing progress */}
+            <div style={{
+              position: 'absolute', left: 0, top: 0, bottom: 0, borderRadius: 3,
+              width: `${progressPct.toFixed(1)}%`,
               background: isProjection ? '#f5a623' : '#4a9eff',
-              transition: 'width 200ms ease',
+              transition: 'width 160ms linear',
+            }} />
+            {/* Scrubber dot */}
+            <div style={{
+              position: 'absolute', top: '50%',
+              left: `${progressPct.toFixed(1)}%`,
+              transform: 'translate(-50%, -50%)',
+              width: 12, height: 12, borderRadius: '50%',
+              background: isProjection ? '#f5a623' : '#4a9eff',
+              border: '2px solid rgba(255,255,255,0.9)',
+              boxShadow: '0 0 4px rgba(0,0,0,0.5)',
+              transition: 'left 160ms linear',
+              pointerEvents: 'none',
             }} />
           </div>
+
+          {/* Invisible range input covers the track for mouse interaction */}
           <input
             type="range"
             min={0} max={Math.max(0, steps.length - 1)} value={stepIdx}
@@ -403,15 +497,18 @@ export default function App() {
         </div>
 
         {/* Date display */}
-        <div style={{ flexShrink: 0, textAlign: 'right', minWidth: 120 }}>
+        <div style={{ flexShrink: 0, textAlign: 'right', minWidth: 130 }}>
           <div style={{
-            fontSize: 15, fontWeight: 700, color: isProjection ? '#f5a623' : '#e8e8f0',
-            letterSpacing: 0.5,
+            fontSize: 16, fontWeight: 700,
+            color: isProjection ? '#f5a623' : '#e8e8f0',
+            letterSpacing: 0.5, fontVariantNumeric: 'tabular-nums',
           }}>
-            {currentDate ? fmtDisplay(currentDate, dataEnd).split('›')[0] : '—'}
+            {currentDate ? fmtDisplay(currentDate, dataEnd).replace(' ›', '') : '—'}
           </div>
           {isProjection && (
-            <div style={{ fontSize: 10, color: '#f5a623', opacity: 0.8, marginTop: 2 }}>forecast</div>
+            <div style={{ fontSize: 10, color: '#f5a623', opacity: 0.75, marginTop: 1, letterSpacing: 1 }}>
+              FORECAST
+            </div>
           )}
         </div>
 
@@ -453,9 +550,10 @@ function CtrlBtn({ onClick, children, title, active = false, style: extraStyle =
       style={{
         background:   active ? 'rgba(74,158,255,0.25)' : 'rgba(255,255,255,0.05)',
         color:        active ? '#4a9eff' : '#ccc',
-        border:       `1px solid ${active ? 'rgba(74,158,255,0.4)' : 'rgba(255,255,255,0.1)'}`,
-        borderRadius: 5, width: 32, height: 32, cursor: 'pointer', fontSize: 13,
+        border:       `1px solid ${active ? 'rgba(74,158,255,0.4)' : 'rgba(255,255,255,0.12)'}`,
+        borderRadius: 5, width: 34, height: 34, cursor: 'pointer', fontSize: 13,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
+        transition: 'background 150ms, color 150ms',
         ...extraStyle,
       }}
     >
@@ -483,7 +581,7 @@ function YearTicks({ steps, projectionFrac }: { steps: string[]; projectionFrac:
           key={t.label}
           style={{
             position: 'absolute', left: `${t.pct}%`, transform: 'translateX(-50%)',
-            fontSize: 9, color: t.isProjection ? 'rgba(245,166,35,0.6)' : 'rgba(255,255,255,0.35)',
+            fontSize: 9, color: t.isProjection ? 'rgba(245,166,35,0.65)' : 'rgba(255,255,255,0.38)',
             whiteSpace: 'nowrap',
           }}
         >
