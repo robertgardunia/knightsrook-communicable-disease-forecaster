@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y \
     postgresql-16-postgis-3 postgresql-16-postgis-3-scripts \
     && rm -rf /var/lib/apt/lists/*
 
-RUN git clone --depth 1 --branch PG16 https://github.com/apache/age.git /tmp/age \
+RUN git clone --depth 1 --branch release/PG16/1.5.0 https://github.com/apache/age.git /tmp/age \
     && cd /tmp/age \
     && make PG_CONFIG=/usr/lib/postgresql/16/bin/pg_config \
     && make install PG_CONFIG=/usr/lib/postgresql/16/bin/pg_config \
