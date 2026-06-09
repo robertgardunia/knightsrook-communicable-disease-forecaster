@@ -35,7 +35,7 @@ export default function App() {
     if (!containerRef.current) return
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: 'https://demotiles.maplibre.org/style.json',
+      style: 'https://tiles.openfreemap.org/styles/positron',
       center: [67.5, 33.0],
       zoom: 5,
     })
@@ -84,7 +84,7 @@ export default function App() {
               id: lineId,
               type: 'line',
               source: srcId,
-              paint: { 'line-color': '#333', 'line-width': 0.4 },
+              paint: { 'line-color': '#666', 'line-width': 0.6 },
             })
           }
           setLoading(prev => { const n = new Set(prev); n.delete(id); return n })
