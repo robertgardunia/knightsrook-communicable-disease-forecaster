@@ -145,19 +145,14 @@ export default function App() {
       const bl = styleLayers.find(l => (l as any)['source-layer'] === 'boundary') as any
 
       if (bl?.source && firstSymId) {
-        map.addLayer({
-          id: 'cdf-admin1', type: 'line',
-          source: bl.source, 'source-layer': 'boundary',
-          filter: ['==', ['get', 'admin_level'], 4],
-          paint: { 'line-color': '#555', 'line-width': 0.7, 'line-opacity': 0.4 },
-        }, firstSymId)
+        // Country borders only — province lines from basemap conflict with GPEI polygon boundaries
         map.addLayer({
           id: 'cdf-admin0', type: 'line',
           source: bl.source, 'source-layer': 'boundary',
           filter: ['==', ['get', 'admin_level'], 2],
           paint: { 'line-color': '#333', 'line-width': 1.8, 'line-opacity': 0.65 },
         }, firstSymId)
-        insertBeforeRef.current = 'cdf-admin1'
+        insertBeforeRef.current = 'cdf-admin0'
       } else {
         insertBeforeRef.current = firstSymId
       }
@@ -214,6 +209,7 @@ export default function App() {
 
     const srcId  = `src-${id}`
     const fillId = `fill-${id}`
+    const lineId = `line-${id}`
 
     if (map.getSource(srcId)) {
       // Crossfade via canvas snapshot: freeze current frame as CSS overlay,
@@ -239,12 +235,17 @@ export default function App() {
         ;(map.getSource(srcId) as GeoJSONSource).setData(geojson)
       }
     } else {
-      // First load: create source and fill layer
+      // First load: create source, fill, and district outline lines from our own geometry
       const before = insertBeforeRef.current ?? undefined
       map.addSource(srcId, { type: 'geojson', data: geojson })
       map.addLayer({
         id: fillId, type: 'fill', source: srcId,
         paint: { 'fill-color': RISK_COLOR as any, 'fill-opacity': 0.72 },
+      }, before)
+      // Lines come from same source so they always match the fills exactly
+      map.addLayer({
+        id: lineId, type: 'line', source: srcId,
+        paint: { 'line-color': 'rgba(0,0,0,0.25)', 'line-width': 0.6 },
       }, before)
 
       map.on('mouseenter', fillId, (e) => {
@@ -299,6 +300,7 @@ export default function App() {
     // Remove layers that were deactivated
     layerIds.forEach(id => {
       if (!active.has(id) && map.getSource(`src-${id}`)) {
+        if (map.getLayer(`line-${id}`)) map.removeLayer(`line-${id}`)
         if (map.getLayer(`fill-${id}`)) map.removeLayer(`fill-${id}`)
         map.removeSource(`src-${id}`)
       }
